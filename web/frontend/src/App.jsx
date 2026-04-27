@@ -99,53 +99,69 @@ function App() {
             {result.error ? (
               <div className="error">{result.error}</div>
             ) : (
-              <div className="recommendations">
-                <h3>🏆 Top Recommendations</h3>
-                {result.recommendations?.map((rec, index) => (
-                  <div key={index} className="recommendation-card">
-                    <div className="card-header">
-                      <span className="rank">#{index + 1}</span>
-                      <h4>{rec.name}</h4>
+              <>
+                {/* Debug: Check if AI insights exist */}
+                {console.log("Frontend result:", result)}
+                {console.log("AI insights exists:", !!result.ai_insights)}
+                {console.log("AI insights value:", result.ai_insights)}
+                
+                {result.ai_insights && (
+                  <div className="ai-insights">
+                    <h3>🤖 AI-Powered Insights</h3>
+                    <div className="insights-content">
+                      <p>{result.ai_insights}</p>
                     </div>
-                    
-                    <div className="coordinates">
-                      📍 {rec.lat.toFixed(6)}, {rec.lng.toFixed(6)}
-                    </div>
-
-                    <div className="stats">
-                      <div className="stat">
-                        <span className="stat-label">Competitors Nearby:</span>
-                        <span className={`stat-value ${rec.competitor_count < 3 ? 'good' : rec.competitor_count > 10 ? 'bad' : 'medium'}`}>
-                          {rec.competitor_count}
-                        </span>
-                      </div>
-                      <div className="stat">
-                        <span className="stat-label">Avg Competitor Rating:</span>
-                        <span className="stat-value">{rec.avg_competitor_rating}/5</span>
-                      </div>
-                    </div>
-
-                    <div className="reasoning">
-                      <strong>💡 Why this location?</strong>
-                      <p>{rec.reasoning}</p>
-                    </div>
-
-                    {rec.competitors?.length > 0 && (
-                      <div className="competitors">
-                        <strong>🏢 Nearby Competitors:</strong>
-                        <ul>
-                          {rec.competitors.map((comp, i) => (
-                            <li key={i}>
-                              {comp.name}
-                              {comp.rating && ` (${comp.rating}⭐)`}
-                            </li>
-                          ))}
-                        </ul>
-                      </div>
-                    )}
                   </div>
-                ))}
-              </div>
+                )}
+                
+                <div className="recommendations">
+                  <h3>🏆 Top Recommendations</h3>
+                  {result.recommendations?.map((rec, index) => (
+                    <div key={index} className="recommendation-card">
+                      <div className="card-header">
+                        <span className="rank">#{index + 1}</span>
+                        <h4>{rec.name}</h4>
+                      </div>
+                      
+                      <div className="coordinates">
+                        📍 {rec.lat.toFixed(6)}, {rec.lng.toFixed(6)}
+                      </div>
+
+                      <div className="stats">
+                        <div className="stat">
+                          <span className="stat-label">Competitors Nearby:</span>
+                          <span className={`stat-value ${rec.competitor_count < 3 ? 'good' : rec.competitor_count > 10 ? 'bad' : 'medium'}`}>
+                            {rec.competitor_count}
+                          </span>
+                        </div>
+                        <div className="stat">
+                          <span className="stat-label">Avg Competitor Rating:</span>
+                          <span className="stat-value">{rec.avg_competitor_rating}/5</span>
+                        </div>
+                      </div>
+
+                      <div className="reasoning">
+                        <strong>💡 Why this location?</strong>
+                        <p>{rec.reasoning}</p>
+                      </div>
+
+                      {rec.competitors?.length > 0 && (
+                        <div className="competitors">
+                          <strong>🏢 Nearby Competitors:</strong>
+                          <ul>
+                            {rec.competitors.map((comp, i) => (
+                              <li key={i}>
+                                {comp.name}
+                                {comp.rating && ` (${comp.rating}⭐)`}
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </>
             )}
           </div>
         )}

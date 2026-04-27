@@ -1,5 +1,5 @@
 """
-Location Intelligence Agent - FastAPI Backend
+Location Intelligence Agent - FastAPI Backend (Clean Version)
 """
 
 import os
@@ -12,6 +12,10 @@ from dotenv import load_dotenv
 
 # Load environment variables
 load_dotenv()
+
+# Ollama LLM Configuration
+ollama_base_url = os.getenv('OLLAMA_BASE_URL', 'http://localhost:11434')
+ollama_model = os.getenv('OLLAMA_MODEL', 'llama2')
 
 # Import agent components from parent directory
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -27,7 +31,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Import tools (copied from workshop_main.py)
+# Import tools
 import pandas as pd
 from google.cloud import bigquery
 import requests
@@ -61,22 +65,25 @@ class BigQueryTool:
             "bank": "(SELECT value FROM UNNEST(all_tags) WHERE key = 'amenity' LIMIT 1) = 'bank'",
             "atm": "(SELECT value FROM UNNEST(all_tags) WHERE key = 'amenity' LIMIT 1) IN ('atm', 'bank')",
             "pharmacy": "(SELECT value FROM UNNEST(all_tags) WHERE key = 'amenity' LIMIT 1) = 'pharmacy'",
-            "clinic": "(SELECT value FROM UNNEST(all_tags) WHERE key = 'amenity' LIMIT 1) IN ('clinic', 'hospital', 'doctors')",
-            "salon": "(SELECT value FROM UNNEST(all_tags) WHERE key = 'shop' LIMIT 1) IN ('hairdresser', 'beauty')",
+            "clinic": ["clinic", "hospital", "doctor", "healthcare"],
+            "salon": ["salon", "hairdresser", "beauty", "spa"],
         }
-        default = f"(SELECT value FROM UNNEST(all_tags) WHERE key = 'name' LIMIT 1) LIKE '%{category}%'"
-        return category_map.get(category.lower(), default)
+        
+        default_condition = f"(SELECT value FROM UNNEST(all_tags) WHERE key = 'name' LIMIT 1) LIKE '%{category}%'"
+        
+        return category_map.get(category.lower(), default_condition)
     
     def query_pois(self, category: str, limit: int = 20) -> pd.DataFrame:
-        """Query points of interest from OpenStreetMap."""
+        """Query points of interest for a category in Bangalore."""
+        tag_condition = self._get_osm_tags(category)
+        
+        # Build polygon string separately to avoid SQL syntax issues
         min_lng = self.bangalore_bbox['min_lng']
         min_lat = self.bangalore_bbox['min_lat']
         max_lng = self.bangalore_bbox['max_lng']
         max_lat = self.bangalore_bbox['max_lat']
-        polygon_wkt = f"POLYGON(({min_lng} {min_lat}, {max_lng} {min_lat}, {max_lng} {max_lat}, {min_lng} {max_lat}, {min_lng} {min_lat}))"
         
-        tag_condition = self._get_osm_tags(category)
-        print(f"Querying for category: {category}, tag_condition: {tag_condition[:100]}...")
+        polygon_wkt = f"POLYGON(({min_lng} {min_lat}, {max_lng} {min_lat}, {max_lng} {max_lat}, {min_lng} {max_lat}, {min_lng} {min_lat}))"
         
         query = f"""
         SELECT 
@@ -85,67 +92,164 @@ class BigQueryTool:
             ST_X(geometry) AS lng,
             '{category}' AS category
         FROM `{self.dataset}.planet_features`
-        WHERE ST_WITHIN(geometry, ST_GEOGFROMTEXT('{polygon_wkt}'))
+        WHERE ST_WITHIN(
+            geometry,
+            ST_GEOGFROMTEXT('{polygon_wkt}')
+        )
         AND ST_GEOMETRYTYPE(geometry) = 'ST_Point'
-        AND ({tag_condition})
+        AND (
+            {tag_condition}
+        )
         AND (SELECT value FROM UNNEST(all_tags) WHERE key = 'name' LIMIT 1) IS NOT NULL
         LIMIT {limit}
         """
         
         try:
             df = self.client.query(query).to_dataframe()
-            print(f"BigQuery query returned {len(df)} rows for category: {category}")
             return df
-        except Exception as e:
-            print(f"BigQuery error: {e}")
-            print(f"Query: {query}")
-            return pd.DataFrame()
-    
-    def get_sample_data(self, limit: int = 5) -> pd.DataFrame:
-        """Get sample data to verify connection."""
-        min_lng = self.bangalore_bbox['min_lng']
-        min_lat = self.bangalore_bbox['min_lat']
-        max_lng = self.bangalore_bbox['max_lng']
-        max_lat = self.bangalore_bbox['max_lat']
-        polygon_wkt = f"POLYGON(({min_lng} {min_lat}, {max_lng} {min_lat}, {max_lng} {max_lat}, {min_lng} {max_lat}, {min_lng} {min_lat}))"
-        
-        query = f"""
-        SELECT 
-            (SELECT value FROM UNNEST(all_tags) WHERE key = 'name' LIMIT 1) AS name,
-            ST_Y(geometry) AS lat,
-            ST_X(geometry) AS lng
-        FROM `{self.dataset}.planet_features`
-        WHERE ST_WITHIN(geometry, ST_GEOGFROMTEXT('{polygon_wkt}'))
-        AND ST_GEOMETRYTYPE(geometry) = 'ST_Point'
-        AND (SELECT value FROM UNNEST(all_tags) WHERE key = 'name' LIMIT 1) IS NOT NULL
-        LIMIT {limit}
-        """
-        
-        try:
-            return self.client.query(query).to_dataframe()
         except Exception as e:
             print(f"BigQuery error: {e}")
             return pd.DataFrame()
 
 
 class MapsTool:
-    """Tool for Google Maps Platform APIs."""
+    """Tool for Google Maps Platform APIs with BigQuery fallback."""
     
-    def __init__(self, api_key: str):
+    def __init__(self, api_key: str, bq_tool: 'BigQueryTool' = None):
         self.api_key = api_key
         self.base_url = "https://maps.googleapis.com/maps/api"
+        self.places_api_disabled = False
+        self.places_api_error = ""
+        self.bq_tool = bq_tool
+    
+    def _fallback_nearby_search(self, lat: float, lng: float, keyword: str, 
+                                radius: int = 5000, max_results: int = 10) -> List[Dict]:
+        """Use BigQuery as fallback to find nearby places."""
+        if not self.bq_tool:
+            return []
+        
+        import math
+        
+        try:
+            # Query nearby POIs from BigQuery
+            df = self.bq_tool.query_pois(keyword, limit=max_results * 10)
+            
+            if df.empty:
+                return []
+            
+            # Calculate distances using Haversine formula
+            def haversine(lat1, lng1, lat2, lng2):
+                r = 6371  # Earth's radius in km
+                dlat = math.radians(lat2 - lat1)
+                dlng = math.radians(lng2 - lng1)
+                a = math.sin(dlat/2)**2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlng/2)**2
+                c = 2 * math.asin(math.sqrt(a))
+                return r * c * 1000  # Return in meters
+            
+            df['distance'] = df.apply(
+                lambda row: haversine(lat, lng, row['lat'], row['lng']),
+                axis=1
+            )
+            
+            # Filter by radius and sort by distance
+            df_filtered = df[df['distance'] <= radius].sort_values('distance')
+            
+            # Convert to list of dicts
+            places = []
+            for _, row in df_filtered.head(max_results).iterrows():
+                places.append({
+                    "name": row['name'],
+                    "lat": row['lat'],
+                    "lng": row['lng'],
+                    "rating": None,
+                    "user_ratings_total": None,
+                    "source": "bigquery_fallback"
+                })
+            
+            return places
+            
+        except Exception as e:
+            print(f"BigQuery fallback error: {e}")
+            return []
+    
+    def _get_place_types(self, keyword: str) -> list:
+        """Map business keyword to Places API types."""
+        type_map = {
+            "gym": ["gym", "fitness_center"],
+            "fitness": ["gym", "fitness_center"],
+            "cafe": ["cafe", "coffee_shop"],
+            "coffee": ["cafe", "coffee_shop"],
+            "restaurant": ["restaurant"],
+            "food": ["restaurant", "cafe"],
+            "pharmacy": ["pharmacy"],
+            "bank": ["bank", "atm"],
+            "atm": ["atm", "bank"],
+            "office": ["office"],
+            "coworking": ["office"],
+            "shop": ["store"],
+            "retail": ["store"],
+            "salon": ["hair_care", "beauty_salon"],
+            "spa": ["spa"],
+            "clinic": ["clinic", "doctor"],
+            "hospital": ["hospital"],
+        }
+        return type_map.get(keyword.lower(), [])
+    
+    def _try_legacy_places_api(self, lat: float, lng: float, keyword: str,
+                               radius: int = 5000, max_results: int = 10) -> List[Dict]:
+        """Try the legacy Places Nearby Search API as fallback."""
+        url = "https://maps.googleapis.com/maps/api/place/nearbysearch/json"
+        
+        params = {
+            "location": f"{lat},{lng}",
+            "radius": min(radius, 50000),
+            "keyword": keyword,
+            "key": self.api_key,
+        }
+        
+        try:
+            response = requests.get(url, params=params, timeout=10)
+            data = response.json()
+            
+            if data.get("status") == "OK":
+                places = []
+                for place in data.get("results", [])[:max_results]:
+                    geometry = place.get("geometry", {}).get("location", {})
+                    places.append({
+                        "name": place.get("name", "Unknown"),
+                        "lat": geometry.get("lat"),
+                        "lng": geometry.get("lng"),
+                        "rating": place.get("rating"),
+                        "user_ratings_total": place.get("user_ratings_total"),
+                        "source": "places_api_legacy"
+                    })
+                return places
+            else:
+                print(f"⚠️  Legacy Places API status: {data.get('status')}")
+                return []
+        except Exception as e:
+            print(f"⚠️  Legacy Places API error: {e}")
+            return []
     
     def nearby_search(self, lat: float, lng: float, keyword: str, 
                       radius: int = 5000, max_results: int = 10) -> List[Dict]:
-        """Search for places near a location using Places API (New)."""
+        """Search for places near a location using Places API with multiple fallbacks."""
+        if self.places_api_disabled:
+            # Use BigQuery fallback if Places API is disabled
+            return self._fallback_nearby_search(lat, lng, keyword, radius, max_results)
+        
         url = "https://places.googleapis.com/v1/places:searchNearby"
+        
+        # Get place types for this keyword
+        place_types = self._get_place_types(keyword)
         
         headers = {
             "Content-Type": "application/json",
             "X-Goog-Api-Key": self.api_key,
-            "X-Goog-FieldMask": "places.displayName,places.location,places.rating,places.userRatingCount"
+            "X-Goog-FieldMask": "places.displayName,places.location,places.rating,places.userRatingCount,places.types"
         }
         
+        # Only include includedTypes if we have a mapping for this keyword
         body = {
             "locationRestriction": {
                 "circle": {
@@ -153,12 +257,33 @@ class MapsTool:
                     "radius": min(radius, 50000)
                 }
             },
-            "keyword": keyword,
             "maxResultCount": min(max_results, 20)
         }
         
+        if place_types:
+            body["includedTypes"] = place_types
+        
         try:
             response = requests.post(url, headers=headers, json=body, timeout=10)
+            
+            # If we get a 4xx error, try legacy API
+            if response.status_code >= 400:
+                error_details = ""
+                try:
+                    error_details = response.json().get("error", {}).get("message", "")
+                except:
+                    pass
+                print(f"⚠️  Places API (New) returned {response.status_code}: {error_details or response.text[:100]}")
+                print("⚠️  Trying legacy Places API...")
+                
+                legacy_results = self._try_legacy_places_api(lat, lng, keyword, radius, max_results)
+                if legacy_results:
+                    return legacy_results
+                
+                print("⚠️  All Places APIs failed - using BigQuery fallback")
+                self.places_api_disabled = True
+                return self._fallback_nearby_search(lat, lng, keyword, radius, max_results)
+            
             response.raise_for_status()
             data = response.json()
             
@@ -171,57 +296,31 @@ class MapsTool:
                     "lat": location.get("latitude"),
                     "lng": location.get("longitude"),
                     "rating": place.get("rating"),
-                    "user_ratings_total": place.get("userRatingCount")
+                    "user_ratings_total": place.get("userRatingCount"),
+                    "source": "places_api_new"
                 })
             return places
             
         except requests.exceptions.Timeout:
-            print("⚠️  Places API timeout - returning empty list")
-            return []
+            print("⚠️  Places API timeout - trying legacy API")
+            legacy_results = self._try_legacy_places_api(lat, lng, keyword, radius, max_results)
+            if legacy_results:
+                return legacy_results
+            
+            print("⚠️  Using BigQuery fallback")
+            self.places_api_disabled = True
+            return self._fallback_nearby_search(lat, lng, keyword, radius, max_results)
+            
         except requests.exceptions.RequestException as e:
             print(f"⚠️  Places API error: {e}")
-            return []
-    
-    def distance_matrix(self, origins: List[tuple], destinations: List[tuple], 
-                        mode: str = "driving") -> Dict[str, Any]:
-        """Calculate distances between points."""
-        origins_str = "|".join([f"{lat},{lng}" for lat, lng in origins])
-        destinations_str = "|".join([f"{lat},{lng}" for lat, lng in destinations])
-        
-        url = f"{self.base_url}/distancematrix/json"
-        params = {
-            "origins": origins_str,
-            "destinations": destinations_str,
-            "mode": mode,
-            "key": self.api_key
-        }
-        
-        try:
-            response = requests.get(url, params=params)
-            response.raise_for_status()
-            data = response.json()
+            print("⚠️  Trying legacy Places API...")
+            legacy_results = self._try_legacy_places_api(lat, lng, keyword, radius, max_results)
+            if legacy_results:
+                return legacy_results
             
-            if data.get("status") != "OK":
-                return {"error": data.get("status")}
-            
-            results = []
-            for i, row in enumerate(data.get("rows", [])):
-                for j, element in enumerate(row.get("elements", [])):
-                    if element.get("status") == "OK":
-                        results.append({
-                            "origin_index": i,
-                            "destination_index": j,
-                            "distance_meters": element.get("distance", {}).get("value"),
-                            "duration_seconds": element.get("duration", {}).get("value")
-                        })
-            
-            return {
-                "origin_addresses": data.get("origin_addresses", []),
-                "destination_addresses": data.get("destination_addresses", []),
-                "results": results
-            }
-        except Exception as e:
-            return {"error": str(e)}
+            print("⚠️  Using BigQuery fallback")
+            self.places_api_disabled = True
+            return self._fallback_nearby_search(lat, lng, keyword, radius, max_results)
 
 
 class LocationIntelligenceAgent:
@@ -230,6 +329,8 @@ class LocationIntelligenceAgent:
     def __init__(self, bq_tool: BigQueryTool, maps_tool: MapsTool):
         self.bq_tool = bq_tool
         self.maps_tool = maps_tool
+        self.ollama_url = ollama_base_url
+        self.ollama_model = ollama_model
     
     def _extract_business_type(self, query: str) -> str:
         """Extract business type from query."""
@@ -293,6 +394,66 @@ class LocationIntelligenceAgent:
         
         return "; ".join(reasons)
     
+    def _call_llm(self, prompt: str, max_tokens: int = 300) -> str:
+        """Call Ollama LLM for natural language generation."""
+        for attempt in range(3):
+            try:
+                payload = {
+                    "model": self.ollama_model,
+                    "prompt": prompt,
+                    "stream": False,
+                    "options": {
+                        "temperature": 0.7,
+                        "max_tokens": max_tokens,
+                        "num_predict": max_tokens
+                    }
+                }
+                
+                response = requests.post(
+                    f"{self.ollama_url}/api/generate",
+                    json=payload,
+                    timeout=60
+                )
+                
+                if response.status_code == 200:
+                    result = response.json().get("response", "").strip()
+                    if result:
+                        return result
+                    else:
+                        if attempt < 2:
+                            continue
+                        return "Unable to generate AI insights at the moment."
+                else:
+                    if attempt < 2:
+                        continue
+                    return "Unable to generate AI insights at the moment."
+                    
+            except requests.exceptions.Timeout:
+                if attempt < 2:
+                    continue
+                return "AI insights unavailable - using fallback analysis."
+            except Exception as e:
+                return "AI insights unavailable - using fallback analysis."
+        
+        return "AI insights unavailable - using fallback analysis."
+    
+    def _generate_llm_insights(self, query: str, business_type: str, locations: List[Dict]) -> str:
+        """Generate AI-powered insights using LLM."""
+        location_summary = "\n".join([
+            f"{i+1}. {loc['name']} - {loc['competitor_count']} competitors"
+            for i, loc in enumerate(locations[:5])
+        ])
+        
+        prompt = f"""
+Analyze locations for {business_type} in Bangalore:
+
+{location_summary}
+
+Recommend best location and key factors (max 150 words):
+"""
+        
+        return self._call_llm(prompt, max_tokens=200)
+    
     def run(self, query: str) -> Dict[str, Any]:
         """Run the agent with a query."""
         business_type = self._extract_business_type(query)
@@ -320,11 +481,17 @@ class LocationIntelligenceAgent:
         # Rank by low competition
         ranked = sorted(analyzed_locations, key=lambda x: x['competitor_count'])
         
+        # Generate AI insights
+        print("🤖 Step 4: Generating AI insights...")
+        ai_insights = self._generate_llm_insights(query, business_type, ranked)
+        print(f"🤖 AI insights generated: {ai_insights[:100]}...")
+        
         return {
             "query": query,
             "business_type": business_type,
             "recommendations": ranked[:3],
-            "total_analyzed": len(pois)
+            "total_analyzed": len(pois),
+            "ai_insights": ai_insights
         }
 
 
@@ -335,7 +502,7 @@ maps_key = os.getenv('MAPS_API_KEY', 'your-maps-api-key')
 agent = None
 if project_id != 'your-project-id' and maps_key != 'your-maps-api-key':
     bq_tool = BigQueryTool(project_id)
-    maps_tool = MapsTool(maps_key)
+    maps_tool = MapsTool(maps_key, bq_tool=bq_tool)
     agent = LocationIntelligenceAgent(bq_tool, maps_tool)
 
 
@@ -359,6 +526,7 @@ class QueryResponse(BaseModel):
     business_type: str
     recommendations: List[Recommendation]
     total_analyzed: int
+    ai_insights: Optional[str] = None
     error: Optional[str] = None
 
 
@@ -370,33 +538,23 @@ def read_root():
 
 @app.get("/health")
 def health_check():
-    if agent is None:
-        return {"status": "not_configured", "message": "API keys not set"}
-    return {"status": "healthy", "agent": "ready"}
+    if agent:
+        return {"status": "healthy", "components": {"bigquery": "ok", "maps": "ok", "llm": "ok"}}
+    else:
+        return {"status": "not_configured", "error": "API keys not configured"}
 
 
 @app.post("/analyze", response_model=QueryResponse)
 def analyze_location(request: QueryRequest):
-    if agent is None:
-        raise HTTPException(status_code=503, detail="Agent not configured. Set GOOGLE_CLOUD_PROJECT and MAPS_API_KEY")
+    """Analyze a location query."""
+    if not agent:
+        raise HTTPException(status_code=503, detail="Agent not initialized - check API keys")
     
     try:
         result = agent.run(request.query)
-        return result
+        return QueryResponse(**result)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/sample-data")
-def get_sample_data():
-    if agent is None:
-        raise HTTPException(status_code=503, detail="Agent not configured")
-    
-    try:
-        df = agent.bq_tool.get_sample_data(limit=5)
-        return {"data": df.to_dict('records')}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
 
 
 if __name__ == "__main__":
