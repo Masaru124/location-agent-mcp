@@ -1,0 +1,26 @@
+# Core ADK and MCP dependencies
+google-adk>=0.1.0
+mcp>=0.1.0
+
+# Google Cloud dependencies
+google-cloud-bigquery>=3.0.0
+google-auth>=2.0.0
+google-api-python-client>=2.0.0
+
+# Data processing
+pandas>=2.0.0
+numpy>=1.24.0
+
+# Environment management
+python-dotenv>=1.0.0
+
+# Visualization (for map output)
+folium>=0.14.0
+ipython>=8.0.0
+
+# Jupyter
+jupyter>=1.0.0
+ipykernel>=6.0.0
+
+# HTTP requests for Maps API
+requests>=2.31.0
