@@ -20,6 +20,7 @@ class BigQueryTool:
         Args:
             project_id: Google Cloud project ID
         """
+        self.project_id = project_id
         self.client = bigquery.Client(project=project_id)
         self.dataset = "bigquery-public-data.geo_openstreetmap"
         
@@ -77,7 +78,7 @@ class BigQueryTool:
         """
         
         try:
-            query_job = self.client.query(query)
+            query_job = self.client.query(query, project=self.project_id)
             results = query_job.result()
             
             # Convert to list of dictionaries
@@ -134,7 +135,7 @@ class BigQueryTool:
         """
         
         try:
-            query_job = self.client.query(query)
+            query_job = self.client.query(query, project=self.project_id)
             result = list(query_job.result())[0]
             
             return {
@@ -206,7 +207,7 @@ class BigQueryTool:
         """
         
         try:
-            return self.client.query(query).to_dataframe()
+            return self.client.query(query, project=self.project_id).to_dataframe()
         except Exception as e:
             print(f"Error fetching sample data: {str(e)}")
             return pd.DataFrame()

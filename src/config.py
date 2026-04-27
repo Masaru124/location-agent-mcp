@@ -3,7 +3,8 @@
 import os
 from dotenv import load_dotenv
 
-load_dotenv()
+# Override existing shell vars so .env is the source of truth for this workshop.
+load_dotenv(override=True)
 
 class Config:
     """Configuration settings for the agent."""

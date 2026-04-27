@@ -49,7 +49,8 @@ from typing import List, Dict, Any
 # Load environment variables from .env file
 try:
     from dotenv import load_dotenv
-    load_dotenv()
+    # Override any stale shell variables from prior sessions.
+    load_dotenv(override=True)
     print("✅ Loaded environment from .env file")
 except ImportError:
     print("⚠️  python-dotenv not installed, using manual configuration")
@@ -163,6 +164,7 @@ class BigQueryTool:
     
     def __init__(self, project_id: str):
         """Initialize BigQuery client."""
+        self.project_id = project_id
         self.client = bigquery.Client(project=project_id)
         self.dataset = "bigquery-public-data.geo_openstreetmap"
         
@@ -214,7 +216,7 @@ class BigQueryTool:
         """
         
         try:
-            results = self.client.query(query).result()
+            results = self.client.query(query, project=self.project_id).result()
             pois = []
             for row in results:
                 pois.append({
@@ -278,7 +280,7 @@ class BigQueryTool:
         """
         
         try:
-            results = self.client.query(query).result()
+            results = self.client.query(query, project=self.project_id).result()
             return {row.category: row.count for row in results}
         except Exception as e:
             print(f"❌ Count query error: {e}")
@@ -310,7 +312,7 @@ def test_bigquery_connection():
         FROM `bigquery-public-data.geo_openstreetmap.planet_features` 
         LIMIT 1
         """
-        result = client.query(query).result()
+        result = client.query(query, project=project_id).result()
         
         for row in result:
             print(f"✅ Connection successful!")
@@ -411,6 +413,8 @@ class MapsTool:
     def __init__(self, api_key: str):
         """Initialize with Maps API key."""
         self.api_key = api_key
+        self.places_api_disabled = False
+        self.places_api_error = ""
     
     def nearby_search(self, lat: float, lng: float, keyword: str, radius: int = 2000) -> List[Dict]:
         """
@@ -424,6 +428,9 @@ class MapsTool:
         Returns:
             List of place dictionaries
         """
+        if self.places_api_disabled:
+            return []
+
         url = "https://places.googleapis.com/v1/places:searchNearby"
         
         headers = {
@@ -445,6 +452,24 @@ class MapsTool:
         
         try:
             response = requests.post(url, headers=headers, json=body, timeout=10)
+
+            if response.status_code in (401, 403):
+                details = ""
+                try:
+                    details = response.json().get("error", {}).get("message", "")
+                except Exception:
+                    details = response.text[:200]
+
+                self.places_api_disabled = True
+                self.places_api_error = details or f"HTTP {response.status_code}"
+                print(
+                    "⚠️  Places API access denied; disabling Places calls for this run. "
+                    "Enable Places API (New), ensure billing is active, and check API key restrictions."
+                )
+                if self.places_api_error:
+                    print(f"⚠️  Places API details: {self.places_api_error}")
+                return []
+
             response.raise_for_status()
             data = response.json()
             
