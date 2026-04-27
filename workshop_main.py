@@ -683,13 +683,7 @@ class LocationIntelligenceAgent:
         return "; ".join(reasons)
     
     def run(self, query: str) -> str:
-        """
-        Run the agent with a user query.
-        
-        Example queries:
-        - "Where should I open a premium gym in Bangalore?"
-        - "Find best cafe locations near tech parks"
-        """
+        """Run the agent with a user query."""
         # Extract business type from query
         business_type = self._extract_business_type(query)
         
@@ -778,34 +772,55 @@ print("\n" + "=" * 70)
 print("🧪 HOUR 4-5: Testing the Full Agent")
 print("=" * 70)
 
-def run_full_demo():
-    """Run a complete demo of the agent."""
+def run_interactive_mode():
+    """Run interactive terminal mode where users can input queries."""
     
     if project_id == 'your-project-id' or maps_key == 'your-maps-api-key':
         print("⚠️  Please set both GOOGLE_CLOUD_PROJECT and MAPS_API_KEY!")
         print()
-        print("   Add your keys and run again:")
-        print("   os.environ['GOOGLE_CLOUD_PROJECT'] = 'your-actual-project-id'")
-        print("   os.environ['MAPS_API_KEY'] = 'your-actual-api-key'")
+        print("   Set them in your .env file or environment variables:")
+        print("   GOOGLE_CLOUD_PROJECT=your-project-id")
+        print("   MAPS_API_KEY=your-api-key")
         return
     
-    print("🚀 Initializing agent with tools...")
+    print("🚀 Initializing Location Intelligence Agent...")
     bq_tool = BigQueryTool(project_id)
     maps_tool = MapsTool(maps_key)
     agent = LocationIntelligenceAgent(bq_tool, maps_tool)
     
-    # Test query
-    query = "Where should I open a premium gym in Bangalore?"
-    print(f"\n{'='*70}")
-    print(f"Query: {query}")
-    print('='*70)
+    print("\n" + "="*70)
+    print("🎯 LOCATION INTELLIGENCE AGENT - INTERACTIVE MODE")
+    print("="*70)
+    print("\n Type 'quit' or 'exit' to stop\n")
+    print("="*70)
     
-    result = agent.run(query)
-    print(result)
+    while True:
+        print()
+        query = input("🔍 Enter your query: ").strip()
+        
+        if query.lower() in ['quit', 'exit', 'q']:
+            print("\n👋 Thank you for using Location Intelligence Agent!")
+            break
+        
+        if not query:
+            print("⚠️  Please enter a valid query")
+            continue
+        
+        print(f"\n{'='*70}")
+        print(f"🤔 Analyzing: {query}")
+        print('='*70)
+        
+        try:
+            result = agent.run(query)
+            print(result)
+        except Exception as e:
+            print(f"❌ Error: {str(e)}")
+        
+        print('\n' + '-'*70)
 
-# Run the demo (will show instructions if keys not set)
-print("\nReady to test! Running demo...\n")
-run_full_demo()
+# Run interactive mode when script is executed
+if __name__ == "__main__":
+    run_interactive_mode()
 
 # =============================================================================
 # HOUR 5-6: CHALLENGE
@@ -893,11 +908,7 @@ print("🎉 Workshop Complete! You built a Location Intelligence AI Agent!")
 print("=" * 70)
 
 # -----------------------------------------------------------------------------
-# Quick Test Runner (at the bottom for easy access)
+# END OF WORKSHOP SCRIPT
 # -----------------------------------------------------------------------------
 
-if __name__ == "__main__":
-    print("\n💡 To run the full demo:")
-    print("   1. Set your API keys at the top of this file")
-    print("   2. Save the file")
-    print("   3. Run: python workshop_main.py")
+# Note: To run this script, use: python workshop_main.py
