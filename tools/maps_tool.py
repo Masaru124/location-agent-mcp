@@ -23,6 +23,8 @@ class MapsTool:
         """
         self.api_key = api_key
         self.base_url = "https://maps.googleapis.com/maps/api"
+        self.places_api_disabled = False
+        self.places_api_error = ""
     
     def nearby_search(self, 
                       lat: float, 
@@ -43,6 +45,9 @@ class MapsTool:
         Returns:
             List of place dictionaries
         """
+        if self.places_api_disabled:
+            return []
+
         url = "https://places.googleapis.com/v1/places:searchNearby"
         
         headers = {
@@ -70,7 +75,26 @@ class MapsTool:
         body = {k: v for k, v in body.items() if v is not None}
         
         try:
-            response = requests.post(url, headers=headers, json=body)
+            response = requests.post(url, headers=headers, json=body, timeout=10)
+
+            if response.status_code in (401, 403):
+                details = ""
+                try:
+                    details = response.json().get("error", {}).get("message", "")
+                except Exception:
+                    details = response.text[:200]
+
+                self.places_api_disabled = True
+                self.places_api_error = details or f"HTTP {response.status_code}"
+                print(
+                    "Places API access denied; disabling Places calls for this run. "
+                    "Check that billing is enabled, Places API (New) is enabled, "
+                    "and key restrictions allow this API."
+                )
+                if self.places_api_error:
+                    print(f"Places API details: {self.places_api_error}")
+                return []
+
             response.raise_for_status()
             data = response.json()
             
